@@ -274,7 +274,8 @@ func (port *windowsPort) SetDTR(dtr bool) error {
 	// 3) SetRTS(false)	-> RTS = false 	(heigh)	DTR = true 	(low) 	ERROR: DTR toggled
 	//
 	// In addition this way the CommState Flags are not updated
-	/*
+
+	if UseEscapeCommFunction {
 		var res bool
 		if dtr {
 			res = escapeCommFunction(port.handle, commFunctionSetDTR)
@@ -285,7 +286,7 @@ func (port *windowsPort) SetDTR(dtr bool) error {
 			return &PortError{}
 		}
 		return nil
-	*/
+	}
 
 	// The following seems a more reliable way to do it
 
@@ -312,7 +313,7 @@ func (port *windowsPort) SetRTS(rts bool) error {
 	//
 	// In addition this way the CommState Flags are not updated
 
-	/*
+	if UseEscapeCommFunction {
 		var res bool
 		if rts {
 			res = escapeCommFunction(port.handle, commFunctionSetRTS)
@@ -323,7 +324,7 @@ func (port *windowsPort) SetRTS(rts bool) error {
 			return &PortError{}
 		}
 		return nil
-	*/
+	}
 
 	// The following seems a more reliable way to do it
 
