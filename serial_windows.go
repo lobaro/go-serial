@@ -17,7 +17,7 @@ package serial
 
 */
 
-import "syscall"
+import ("syscall")
 
 type windowsPort struct {
 	handle syscall.Handle
@@ -55,6 +55,12 @@ func nativeGetPortsList() ([]string, error) {
 }
 
 func (port *windowsPort) Close() error {
+	defer func() {
+		port.handle = 0
+	}()
+	if port.handle == 0 {
+		return nil
+	}
 	return syscall.CloseHandle(port.handle)
 }
 
