@@ -354,34 +354,6 @@ func (port *windowsPort) SetRTS(rts bool) error {
 	return nil
 }
 
-// GetRTS reads the RTS status from the control flags
-// TODO: This is not yet implemented for other OS and thus not in the Port interface
-func (port *windowsPort) GetRTS() (bool, error) {
-	params := dcb{}
-	if err := getCommState(port.handle, &params); err != nil {
-		return false, &PortError{causedBy: err}
-	}
-
-	if params.Flags&dcbRTSControlEnable != 0 {
-		return true, nil
-	}
-	return false, nil
-}
-
-// GetDTR reads the DTR status from the control flags
-// TODO: This is not yet implemented for other OS and thus not in the Port interface
-func (port *windowsPort) GetDTR() (bool, error) {
-	params := dcb{}
-	if err := getCommState(port.handle, &params); err != nil {
-		return false, &PortError{causedBy: err}
-	}
-
-	if params.Flags&dcbDTRControlEnable != 0 {
-		return true, nil
-	}
-	return false, nil
-}
-
 func (port *windowsPort) GetModemStatusBits() (*ModemStatusBits, error) {
 	var bits uint32
 	if !getCommModemStatus(port.handle, &bits) {
@@ -439,9 +411,13 @@ func nativeOpen(portName string, mode *Mode) (*windowsPort, error) {
 		return nil, &PortError{code: InvalidSerialPort}
 	}
 	params.Flags &= dcbRTSControlDisbaleMask
-	params.Flags |= dcbRTSControlEnable
+	if mode.InitialRTS {
+		params.Flags |= dcbRTSControlEnable
+	}
 	params.Flags &= dcbDTRControlDisableMask
-	params.Flags |= dcbDTRControlEnable
+	if mode.InitialDTR {
+		params.Flags |= dcbDTRControlEnable
+	}
 	params.Flags &^= dcbOutXCTSFlow
 	params.Flags &^= dcbOutXDSRFlow
 	params.Flags &^= dcbDSRSensitivity
