@@ -4,9 +4,9 @@
 // license that can be found in the LICENSE file.
 //
 
-package enumerator
+package serial
 
-func nativeGetDetailedPortsList() ([]*PortDetails, error) {
-	// TODO
-	return nil, &PortEnumerationError{}
+func (port *unixPort) setSpecialBaudrate(speed uint32) error {
+	// TODO: unimplemented
+	return &PortError{code: InvalidSpeed}
 }

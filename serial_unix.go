@@ -1,5 +1,5 @@
 //
-// Copyright 2014-2017 Cristian Maglie. All rights reserved.
+// Copyright 2014-2021 Cristian Maglie. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
@@ -13,28 +13,32 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"unsafe"
+	"sync/atomic"
+	"time"
 
+	"go.bug.st/serial/unixutils"
 	"golang.org/x/sys/unix"
-
-	"go.bug.st/serial.v1/unixutils"
 )
 
 type unixPort struct {
 	handle int
 
+	readTimeout time.Duration
 	closeLock   sync.RWMutex
 	closeSignal *unixutils.Pipe
-	opened      bool
+	opened      uint32
 }
 
 func (port *unixPort) Close() error {
+	if !atomic.CompareAndSwapUint32(&port.opened, 1, 0) {
+		return nil
+	}
+
 	// Close port
 	port.releaseExclusiveAccess()
 	if err := unix.Close(port.handle); err != nil {
 		return err
 	}
-	port.opened = false
 
 	if port.closeSignal != nil {
 		// Send close signal to all pending reads (if any)
@@ -52,42 +56,74 @@ func (port *unixPort) Close() error {
 	return nil
 }
 
-func (port *unixPort) Read(p []byte) (n int, err error) {
+func (port *unixPort) Read(p []byte) (int, error) {
 	port.closeLock.RLock()
 	defer port.closeLock.RUnlock()
-	if !port.opened {
+	if atomic.LoadUint32(&port.opened) != 1 {
 		return 0, &PortError{code: PortClosed}
+	}
+
+	var deadline time.Time
+	if port.readTimeout != NoTimeout {
+		deadline = time.Now().Add(port.readTimeout)
 	}
 
 	fds := unixutils.NewFDSet(port.handle, port.closeSignal.ReadFD())
-	res, err := unixutils.Select(fds, nil, fds, -1)
-	if err != nil {
-		return 0, err
+	for {
+		timeout := time.Duration(-1)
+		if port.readTimeout != NoTimeout {
+			timeout = deadline.Sub(time.Now())
+		}
+		res, err := unixutils.Select(fds, nil, fds, timeout)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if res.IsReadable(port.closeSignal.ReadFD()) {
+			return 0, &PortError{code: PortClosed}
+		}
+		if !res.IsReadable(port.handle) {
+			// Timeout happened
+			return 0, nil
+		}
+		n, err := unix.Read(port.handle, p)
+		if err == unix.EINTR {
+			continue
+		}
+		// Linux: when the port is disconnected during a read operation
+		// the port is left in a "readable with zero-length-data" state.
+		// https://stackoverflow.com/a/34945814/1655275
+		if n == 0 && err == nil {
+			return 0, &PortError{code: PortClosed}
+		}
+		if n < 0 { // Do not return -1 unix errors
+			n = 0
+		}
+		return n, err
 	}
-	if res.IsReadable(port.closeSignal.ReadFD()) {
-		return 0, &PortError{code: PortClosed}
-	}
-	return unix.Read(port.handle, p)
 }
 
 func (port *unixPort) Write(p []byte) (n int, err error) {
-	return unix.Write(port.handle, p)
+	n, err = unix.Write(port.handle, p)
+	if n < 0 { // Do not return -1 unix errors
+		n = 0
+	}
+	return
 }
 
 func (port *unixPort) ResetInputBuffer() error {
-	return ioctl(port.handle, ioctlTcflsh, unix.TCIFLUSH)
+	return unix.IoctlSetInt(port.handle, ioctlTcflsh, unix.TCIFLUSH)
 }
 
 func (port *unixPort) ResetOutputBuffer() error {
-	return ioctl(port.handle, ioctlTcflsh, unix.TCOFLUSH)
+	return unix.IoctlSetInt(port.handle, ioctlTcflsh, unix.TCOFLUSH)
 }
 
 func (port *unixPort) SetMode(mode *Mode) error {
 	settings, err := port.getTermSettings()
 	if err != nil {
-		return err
-	}
-	if err := setTermSettingsBaudrate(mode.BaudRate, settings); err != nil {
 		return err
 	}
 	if err := setTermSettingsParity(mode.Parity, settings); err != nil {
@@ -99,7 +135,23 @@ func (port *unixPort) SetMode(mode *Mode) error {
 	if err := setTermSettingsStopBits(mode.StopBits, settings); err != nil {
 		return err
 	}
-	return port.setTermSettings(settings)
+	requireSpecialBaudrate := false
+	if err, special := setTermSettingsBaudrate(mode.BaudRate, settings); err != nil {
+		return err
+	} else if special {
+		requireSpecialBaudrate = true
+	}
+	if err := port.setTermSettings(settings); err != nil {
+		return err
+	}
+	if requireSpecialBaudrate {
+		// MacOSX require this one to be the last operation otherwise an
+		// 'Invalid serial port' error is produced.
+		if err := port.setSpecialBaudrate(uint32(mode.BaudRate)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (port *unixPort) SetDTR(dtr bool) error {
@@ -128,6 +180,14 @@ func (port *unixPort) SetRTS(rts bool) error {
 	return port.setModemBitsStatus(status)
 }
 
+func (port *unixPort) SetReadTimeout(timeout time.Duration) error {
+	if timeout < 0 && timeout != NoTimeout {
+		return &PortError{code: InvalidTimeoutValue}
+	}
+	port.readTimeout = timeout
+	return nil
+}
+
 func (port *unixPort) GetModemStatusBits() (*ModemStatusBits, error) {
 	status, err := port.getModemBitsStatus()
 	if err != nil {
@@ -153,16 +213,12 @@ func nativeOpen(portName string, mode *Mode) (*unixPort, error) {
 		return nil, err
 	}
 	port := &unixPort{
-		handle: h,
-		opened: true,
+		handle:      h,
+		opened:      1,
+		readTimeout: NoTimeout,
 	}
 
 	// Setup serial port
-	if port.SetMode(mode) != nil {
-		port.Close()
-		return nil, &PortError{code: InvalidSerialPort}
-	}
-
 	settings, err := port.getTermSettings()
 	if err != nil {
 		port.Close()
@@ -179,6 +235,13 @@ func nativeOpen(portName string, mode *Mode) (*unixPort, error) {
 	port.SetRTS(mode.InitialRTS)
 
 	if port.setTermSettings(settings) != nil {
+		port.Close()
+		return nil, &PortError{code: InvalidSerialPort}
+	}
+
+	// MacOSX require that this operation is the last one otherwise an
+	// 'Invalid serial port' error is returned... don't know why...
+	if port.SetMode(mode) != nil {
 		port.Close()
 		return nil, &PortError{code: InvalidSerialPort}
 	}
@@ -243,22 +306,6 @@ func nativeGetPortsList() ([]string, error) {
 }
 
 // termios manipulation functions
-
-func setTermSettingsBaudrate(speed int, settings *unix.Termios) error {
-	baudrate, ok := baudrateMap[speed]
-	if !ok {
-		return &PortError{code: InvalidSpeed}
-	}
-	// revert old baudrate
-	for _, rate := range baudrateMap {
-		settings.Cflag &^= rate
-	}
-	// set new baudrate
-	settings.Cflag |= baudrate
-	settings.Ispeed = toTermiosSpeedType(baudrate)
-	settings.Ospeed = toTermiosSpeedType(baudrate)
-	return nil
-}
 
 func setTermSettingsParity(parity Parity, settings *unix.Termios) error {
 	switch parity {
@@ -374,29 +421,25 @@ func setRawMode(settings *unix.Termios) {
 // native syscall wrapper functions
 
 func (port *unixPort) getTermSettings() (*unix.Termios, error) {
-	settings := &unix.Termios{}
-	err := ioctl(port.handle, ioctlTcgetattr, uintptr(unsafe.Pointer(settings)))
-	return settings, err
+	return unix.IoctlGetTermios(port.handle, ioctlTcgetattr)
 }
 
 func (port *unixPort) setTermSettings(settings *unix.Termios) error {
-	return ioctl(port.handle, ioctlTcsetattr, uintptr(unsafe.Pointer(settings)))
+	return unix.IoctlSetTermios(port.handle, ioctlTcsetattr, settings)
 }
 
 func (port *unixPort) getModemBitsStatus() (int, error) {
-	var status int
-	err := ioctl(port.handle, unix.TIOCMGET, uintptr(unsafe.Pointer(&status)))
-	return status, err
+	return unix.IoctlGetInt(port.handle, unix.TIOCMGET)
 }
 
 func (port *unixPort) setModemBitsStatus(status int) error {
-	return ioctl(port.handle, unix.TIOCMSET, uintptr(unsafe.Pointer(&status)))
+	return unix.IoctlSetPointerInt(port.handle, unix.TIOCMSET, status)
 }
 
 func (port *unixPort) acquireExclusiveAccess() error {
-	return ioctl(port.handle, unix.TIOCEXCL, 0)
+	return unix.IoctlSetInt(port.handle, unix.TIOCEXCL, 0)
 }
 
 func (port *unixPort) releaseExclusiveAccess() error {
-	return ioctl(port.handle, unix.TIOCNXCL, 0)
+	return unix.IoctlSetInt(port.handle, unix.TIOCNXCL, 0)
 }

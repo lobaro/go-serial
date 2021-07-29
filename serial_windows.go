@@ -1,5 +1,5 @@
 //
-// Copyright 2014-2017 Cristian Maglie. All rights reserved.
+// Copyright 2014-2021 Cristian Maglie. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
@@ -18,13 +18,15 @@ package serial
 */
 
 import (
-	"syscall"
 	"sync"
+	"syscall"
+	"time"
 )
 
 type windowsPort struct {
-	mu sync.Mutex
-	handle syscall.Handle
+	mu                sync.Mutex
+	handle            syscall.Handle
+	readTimeoutCycles int64
 }
 
 func nativeGetPortsList() ([]string, error) {
@@ -34,7 +36,10 @@ func nativeGetPortsList() ([]string, error) {
 	}
 
 	var h syscall.Handle
-	if syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, subKey, 0, syscall.KEY_READ, &h) != nil {
+	if err := syscall.RegOpenKeyEx(syscall.HKEY_LOCAL_MACHINE, subKey, 0, syscall.KEY_READ, &h); err != nil {
+		if errno, isErrno := err.(syscall.Errno); isErrno && errno == syscall.ERROR_FILE_NOT_FOUND {
+			return []string{}, nil
+		}
 		return nil, &PortError{code: ErrorEnumeratingPorts}
 	}
 	defer syscall.RegCloseKey(h)
@@ -72,22 +77,24 @@ func (port *windowsPort) Close() error {
 
 func (port *windowsPort) Read(p []byte) (int, error) {
 	var readed uint32
-	params := &dcb{}
 	ev, err := createOverlappedEvent()
 	if err != nil {
 		return 0, err
 	}
 	defer syscall.CloseHandle(ev.HEvent)
+
+	cycles := int64(0)
 	for {
 		err := syscall.ReadFile(port.handle, p, &readed, ev)
+		if err == syscall.ERROR_IO_PENDING {
+			err = getOverlappedResult(port.handle, ev, &readed, true)
+		}
 		switch err {
 		case nil:
 			// operation completed successfully
-		case syscall.ERROR_IO_PENDING:
-			// wait for overlapped I/O to complete
-			if err := getOverlappedResult(port.handle, ev, &readed, true); err != nil {
-				return int(readed), err
-			}
+		case syscall.ERROR_OPERATION_ABORTED:
+			// port may have been closed
+			return int(readed), &PortError{code: PortClosed, causedBy: err}
 		default:
 			// error happened
 			return int(readed), err
@@ -100,10 +107,19 @@ func (port *windowsPort) Read(p []byte) (int, error) {
 			return 0, err
 		}
 
+		if port.readTimeoutCycles != -1 {
+			cycles++
+			if cycles == port.readTimeoutCycles {
+				// Timeout
+				return 0, nil
+			}
+		}
+
 		// At the moment it seems that the only reliable way to check if
 		// a serial port is alive in Windows is to check if the SetCommState
 		// function fails.
 
+		params := &dcb{}
 		getCommState(port.handle, params)
 		if err := setCommState(port.handle, params); err != nil {
 			port.Close()
@@ -367,6 +383,31 @@ func (port *windowsPort) GetModemStatusBits() (*ModemStatusBits, error) {
 	}, nil
 }
 
+func (port *windowsPort) SetReadTimeout(timeout time.Duration) error {
+	var cycles, cycleDuration int64
+	if timeout == NoTimeout {
+		cycles = -1
+		cycleDuration = 1000
+	} else {
+		cycles = timeout.Milliseconds()/1000 + 1
+		cycleDuration = timeout.Milliseconds() / cycles
+	}
+
+	err := setCommTimeouts(port.handle, &commTimeouts{
+		ReadIntervalTimeout:         0xFFFFFFFF,
+		ReadTotalTimeoutMultiplier:  0xFFFFFFFF,
+		ReadTotalTimeoutConstant:    uint32(cycleDuration),
+		WriteTotalTimeoutConstant:   0,
+		WriteTotalTimeoutMultiplier: 0,
+	})
+	if err != nil {
+		return &PortError{code: InvalidTimeoutValue, causedBy: err}
+	}
+	port.readTimeoutCycles = cycles
+
+	return nil
+}
+
 func createOverlappedEvent() (*syscall.Overlapped, error) {
 	h, err := createEvent(nil, true, false, nil)
 	return &syscall.Overlapped{HEvent: h}, err
@@ -436,18 +477,9 @@ func nativeOpen(portName string, mode *Mode) (*windowsPort, error) {
 		return nil, &PortError{code: InvalidSerialPort}
 	}
 
-	// Set timeouts to 1 second
-	timeouts := &commTimeouts{
-		ReadIntervalTimeout:         0xFFFFFFFF,
-		ReadTotalTimeoutMultiplier:  0xFFFFFFFF,
-		ReadTotalTimeoutConstant:    1000, // 1 sec
-		WriteTotalTimeoutConstant:   0,
-		WriteTotalTimeoutMultiplier: 0,
-	}
-	if setCommTimeouts(port.handle, timeouts) != nil {
+	if port.SetReadTimeout(NoTimeout) != nil {
 		port.Close()
 		return nil, &PortError{code: InvalidSerialPort}
 	}
-
 	return port, nil
 }

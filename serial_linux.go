@@ -1,5 +1,5 @@
 //
-// Copyright 2014-2017 Cristian Maglie. All rights reserved.
+// Copyright 2014-2021 Cristian Maglie. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
@@ -66,4 +66,20 @@ const ioctlTcflsh = unix.TCFLSH
 
 func toTermiosSpeedType(speed uint32) uint32 {
 	return speed
+}
+
+func setTermSettingsBaudrate(speed int, settings *unix.Termios) (error, bool) {
+	baudrate, ok := baudrateMap[speed]
+	if !ok {
+		return nil, true
+	}
+	// revert old baudrate
+	for _, rate := range baudrateMap {
+		settings.Cflag &^= rate
+	}
+	// set new baudrate
+	settings.Cflag |= baudrate
+	settings.Ispeed = toTermiosSpeedType(baudrate)
+	settings.Ospeed = toTermiosSpeedType(baudrate)
+	return nil, false
 }

@@ -1,14 +1,18 @@
 //
-// Copyright 2014-2017 Cristian Maglie. All rights reserved.
+// Copyright 2014-2021 Cristian Maglie. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
 
 package serial_test
 
-import "fmt"
-import "log"
-import "go.bug.st/serial.v1"
+import (
+	"fmt"
+	"log"
+	"strings"
+
+	"go.bug.st/serial"
+)
 
 // This example prints the list of serial ports and use the first one
 // to send a string "10,20,30" and prints the response on the screen.
@@ -48,18 +52,24 @@ func Example_sendAndReceive() {
 	fmt.Printf("Sent %v bytes\n", n)
 
 	// Read and print the response
+
 	buff := make([]byte, 100)
 	for {
 		// Reads up to 100 bytes
 		n, err := port.Read(buff)
 		if err != nil {
 			log.Fatal(err)
-			break
 		}
 		if n == 0 {
 			fmt.Println("\nEOF")
 			break
 		}
-		fmt.Printf("%v", string(buff[:n]))
+
+		fmt.Printf("%s", string(buff[:n]))
+
+		// If we receive a newline stop reading
+		if strings.Contains(string(buff[:n]), "\n") {
+			break
+		}
 	}
 }

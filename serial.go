@@ -1,12 +1,18 @@
 //
-// Copyright 2014-2017 Cristian Maglie. All rights reserved.
+// Copyright 2014-2021 Cristian Maglie. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
 
 package serial
 
-//go:generate go run $GOROOT/src/syscall/mksyscall_windows.go -output zsyscall_windows.go syscall_windows.go
+import "time"
+
+//go:generate go run golang.org/x/sys/windows/mkwinsyscall -output zsyscall_windows.go syscall_windows.go
+
+// Set to true to use the windows escapeCommFunction to set RTS and DTS lines
+// instead of the setCommState function.
+var UseEscapeCommFunction = false
 
 // Set to true to use the windows escapeCommFunction to set RTS and DTS lines
 // instead of the setCommState function.
@@ -44,9 +50,16 @@ type Port interface {
 	// modem status bits for the serial port (CTS, DSR, etc...)
 	GetModemStatusBits() (*ModemStatusBits, error)
 
+	// SetReadTimeout sets the timeout for the Read operation or use serial.NoTimeout
+	// to disable read timeout.
+	SetReadTimeout(t time.Duration) error
+
 	// Close the serial port
 	Close() error
 }
+
+// NoTimeout should be used as a parameter to SetReadTimeout to disable timeout.
+var NoTimeout time.Duration = -1
 
 // ModemStatusBits contains all the modem status bits for a serial port (CTS, DSR, etc...).
 // It can be retrieved with the Port.GetModemStatusBits() method.
@@ -131,6 +144,8 @@ const (
 	InvalidParity
 	// InvalidStopBits the selected number of stop bits is not valid or not supported
 	InvalidStopBits
+	// InvalidTimeoutValue the timeout value is not valid or not supported
+	InvalidTimeoutValue
 	// ErrorEnumeratingPorts an error occurred while listing serial port
 	ErrorEnumeratingPorts
 	// PortClosed the port has been closed while the operation is in progress
@@ -158,6 +173,8 @@ func (e PortError) EncodedErrorString() string {
 		return "Port parity invalid or not supported"
 	case InvalidStopBits:
 		return "Port stop bits invalid or not supported"
+	case InvalidTimeoutValue:
+		return "Timeout value invalid or not supported"
 	case ErrorEnumeratingPorts:
 		return "Could not enumerate serial ports"
 	case PortClosed:
