@@ -14,10 +14,6 @@ import "time"
 // instead of the setCommState function.
 var UseEscapeCommFunction = false
 
-// Set to true to use the windows escapeCommFunction to set RTS and DTS lines
-// instead of the setCommState function.
-var UseEscapeCommFunction = false
-
 // Port is the interface for a serial Port
 type Port interface {
 	// SetMode sets all parameters of the serial port
