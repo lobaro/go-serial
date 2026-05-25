@@ -9,6 +9,7 @@ package enumerator
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -110,5 +111,12 @@ func readLine(filename string) (string, error) {
 	defer file.Close()
 	reader := bufio.NewReader(file)
 	line, _, err := reader.ReadLine()
+	if err == io.EOF {
+		// An empty sysfs attribute file (e.g. an empty "serial",
+		// "manufacturer" or "product") yields io.EOF with no data.
+		// Treat it as an empty value, not an error, so a single device
+		// with a blank attribute does not abort the whole enumeration.
+		return "", nil
+	}
 	return string(line), err
 }
