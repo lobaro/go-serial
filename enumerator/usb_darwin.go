@@ -113,9 +113,9 @@ func extractPortInfo(service io_registry_entry_t) (*PortDetails, error) {
 		// It's an IOUSBDevice
 		vid, _ := usbDevice.GetIntProperty("idVendor", C.kCFNumberSInt16Type)
 		pid, _ := usbDevice.GetIntProperty("idProduct", C.kCFNumberSInt16Type)
-		serialNumber, _ := usbDevice.GetStringProperty("USB Serial Number")
-		vendor, _ := usbDevice.GetStringProperty("USB Vendor Name")
-		product, _ := usbDevice.GetStringProperty("USB Product Name")
+		serialNumber, _ := usbDevice.GetStringProperty("kUSBSerialNumberString")
+		vendor, _ := usbDevice.GetStringProperty("kUSBVendorString")
+		product, _ := usbDevice.GetStringProperty("kUSBProductString")
 		configuration, _ := usbDevice.GetUSBConfigurationString()
 
 		port.IsUSB = true
