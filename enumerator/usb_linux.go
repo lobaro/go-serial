@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"go.bug.st/serial"
 )
@@ -91,8 +92,11 @@ func parseUSBSysFS(usbDevicePath string, details *PortDetails) error {
 	}
 
 	details.IsUSB = true
-	details.VID = vid
-	details.PID = pid
+	// sysfs reports idVendor/idProduct in lowercase hex; the darwin and Windows
+	// backends report them uppercase. Normalize to uppercase so VID/PID are
+	// consistent across platforms.
+	details.VID = strings.ToUpper(vid)
+	details.PID = strings.ToUpper(pid)
 	details.SerialNumber = serial
 	details.Configuration = configuration
 	details.Manufacturer = manufacturer
