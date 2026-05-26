@@ -101,3 +101,31 @@ func TestParseUSBSysFSEmptySerial(t *testing.T) {
 		t.Fatalf("Product = %q, want %q", details.Product, "Arduino Uno")
 	}
 }
+
+// TestParseUSBSysFSVIDPIDUppercase checks that VID/PID read from sysfs (which
+// stores them lowercase) are normalized to uppercase, matching the darwin and
+// Windows backends, while the serial number's case is preserved.
+func TestParseUSBSysFSVIDPIDUppercase(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("idVendor", "10c4\n") // CP2102, lowercase in sysfs
+	write("idProduct", "ea60\n")
+	write("serial", "abcDEF0123\n") // mixed case must be preserved
+	write("manufacturer", "Silicon Labs\n")
+	write("product", "CP2102 USB to UART\n")
+
+	details := &PortDetails{}
+	if err := parseUSBSysFS(dir, details); err != nil {
+		t.Fatalf("parseUSBSysFS returned error %v", err)
+	}
+	if details.VID != "10C4" || details.PID != "EA60" {
+		t.Fatalf("got VID=%q PID=%q, want 10C4/EA60 (uppercase)", details.VID, details.PID)
+	}
+	if details.SerialNumber != "abcDEF0123" {
+		t.Fatalf("SerialNumber = %q, want case preserved", details.SerialNumber)
+	}
+}
